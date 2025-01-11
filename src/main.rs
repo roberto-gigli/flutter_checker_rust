@@ -1,6 +1,6 @@
 use std::{error::Error, fs::read, process::Command};
 
-//El primo
+//El pri
 fn main() {
     println!("Loading flutter version...");
     let flutter_version: &str = &get_flutter_version();
