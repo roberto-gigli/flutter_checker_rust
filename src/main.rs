@@ -1,4 +1,7 @@
 use clap::Parser;
+use futures::executor::LocalPool;
+use futures::join;
+use futures::task::SpawnExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::{env, fmt};
@@ -63,9 +66,16 @@ impl Status {
         }
     }
 
-    fn update(&mut self) {
-        self.flutter_version = get_flutter_version();
-        self.flutter_path = get_flutter_path();
+    async fn update(&mut self) {
+        let (flutter_version, flutter_path, flutter_root_path) = join!(
+            get_flutter_version(),
+            get_flutter_path(),
+            get_flutter_root_path(),
+        );
+
+        self.flutter_version = flutter_version;
+        self.flutter_path = flutter_path;
+        self.flutter_root_path = flutter_root_path;
     }
 }
 
@@ -103,13 +113,37 @@ impl fmt::Display for Status {
 impl Printable for Status {}
 
 fn main() {
-    let args = Args::parse_from(env::args().collect::<Vec<String>>());
-    args.print();
-    run(&args);
+    let mut pool = LocalPool::new();
+
+    let future = async {
+        let args = Args::parse_from(env::args().collect::<Vec<String>>());
+
+        run(&args).await;
+    };
+
+    pool.spawner().spawn(future).unwrap();
+
+    pool.run();
 }
 
-fn system_run(command: &str, cwd: &Option<PathBuf>) -> String {
-    let mut command = Command::new(command);
+async fn shell_run(shell_command: &str, cwd: &Option<PathBuf>) -> String {
+    let mut command = match env::consts::OS {
+        "windows" => Command::new("cmd"),
+        "macos" | "linux" => Command::new("sh"),
+        _ => panic!("Unsupported OS"),
+    };
+
+    match env::consts::OS {
+        "windows" => {
+            command.arg("/C");
+        }
+        "macos" | "linux" => {
+            command.arg("-c");
+        }
+        _ => panic!("Unsupported OS"),
+    };
+
+    command.arg(shell_command);
 
     match &cwd {
         Some(path) => {
@@ -121,14 +155,13 @@ fn system_run(command: &str, cwd: &Option<PathBuf>) -> String {
     let result = command.output();
 
     match result {
-        Ok(output) => String::from_utf8([output.stdout, output.stderr].concat())
-            .unwrap_or_else(|e| e.to_string()),
+        Ok(output) => String::from_utf8_lossy(&[output.stdout, output.stderr].concat()).to_string(),
         Err(e) => e.to_string(),
     }
 }
 
-fn get_flutter_version() -> Option<String> {
-    let output = system_run("flutter --version", &None);
+async fn get_flutter_version() -> Option<String> {
+    let output = shell_run("flutter --version", &None).await;
 
     Some(
         output
@@ -141,29 +174,36 @@ fn get_flutter_version() -> Option<String> {
     )
 }
 
-fn get_flutter_path() -> Option<PathBuf> {
+async fn get_flutter_command_path() -> Option<PathBuf> {
     match env::consts::OS {
         "windows" => {
-            let output = system_run("where flutter", &None);
+            let output = shell_run("where flutter", &None).await;
 
-            let mut split: Vec<&str> = output.split("\n").nth(0)?.split("\\").collect();
-            split.pop();
-
-            Some(split.join("\\").into())
+            let path = output.split("\n").nth(0)?.trim();
+            Some(path.into())
         }
         "macos" | "linux" => {
-            let output = system_run("which flutter", &None);
-
-            let mut split: Vec<&str> = output.split("\n").nth(0)?.split("/").collect();
-            split.pop();
-
-            Some(split.join("/").into())
+            let output = shell_run("which flutter", &None).await;
+            let path = output.trim();
+            Some(path.into())
         }
         _ => None,
     }
 }
 
-fn run(args: &Args) {
+async fn get_flutter_path() -> Option<PathBuf> {
+    let flutter_command_path = get_flutter_command_path().await?;
+    let flutter_path = flutter_command_path.parent()?;
+    Some(flutter_path.to_owned())
+}
+
+async fn get_flutter_root_path() -> Option<PathBuf> {
+    let flutter_path = get_flutter_path().await?;
+    let flutter_root_path = flutter_path.parent()?;
+    Some(flutter_root_path.to_owned())
+}
+
+async fn run(args: &Args) {
     println!("Flutter rust checker version {}", env!("CARGO_PKG_VERSION"));
 
     match &args.working_dir {
@@ -190,7 +230,10 @@ fn run(args: &Args) {
 
     let mut status = Status::new();
 
-    status.update();
+    status.update().await;
 
     status.print();
+
+    // let test = shell_run("flutter --version", &None).await;
+    // println!("Test: {}", test);
 }
