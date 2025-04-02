@@ -2,6 +2,9 @@ use clap::Parser;
 use futures::executor::LocalPool;
 use futures::join;
 use futures::task::SpawnExt;
+use serde_yaml::Value;
+use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
 use std::{env, fmt};
@@ -67,12 +70,14 @@ impl Status {
     }
 
     async fn update(&mut self) {
-        let (flutter_version, flutter_path, flutter_root_path) = join!(
+        let (project_version, flutter_version, flutter_path, flutter_root_path) = join!(
+            get_project_version(),
             get_flutter_version(),
             get_flutter_path(),
             get_flutter_root_path(),
         );
 
+        self.project_version = project_version;
         self.flutter_version = flutter_version;
         self.flutter_path = flutter_path;
         self.flutter_root_path = flutter_root_path;
@@ -203,6 +208,23 @@ async fn get_flutter_root_path() -> Option<PathBuf> {
     Some(flutter_root_path.to_owned())
 }
 
+async fn get_project_version() -> Option<String> {
+    let mut pubspec_file = File::open("pubspec.yaml").ok()?;
+    let mut buf = String::new();
+
+    pubspec_file.read_to_string(&mut buf).ok()?;
+
+    let pubspec: Value = serde_yaml::from_str(&buf).ok()?;
+
+    Some(
+        pubspec
+            .get("environment")?
+            .get("flutter")?
+            .as_str()?
+            .to_string(),
+    )
+}
+
 async fn run(args: &Args) {
     println!("Flutter rust checker version {}", env!("CARGO_PKG_VERSION"));
 
@@ -217,12 +239,12 @@ async fn run(args: &Args) {
 
     let current_dir = env::current_dir().unwrap();
 
-    println!("Current directory is: {:?}", current_dir);
+    println!("Current directory is: {}", current_dir.display());
 
     match &args.desired_version {
         Some(desired_version) => {
             if !desired_version.trim().is_empty() {
-                println!("DesiredVersion: {}", desired_version)
+                println!("DesiredVersion: {desired_version}")
             }
         }
         None => {}
