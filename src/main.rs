@@ -185,11 +185,48 @@ async fn get_flutter_command_path() -> Option<PathBuf> {
             let output = shell_run("where flutter", &None).await;
 
             let path = output.split("\n").nth(0)?.trim();
+
+            if path.is_empty() {
+                return None;
+            }
+
             Some(path.into())
         }
         "macos" | "linux" => {
             let output = shell_run("which flutter", &None).await;
             let path = output.trim();
+
+            if path.is_empty() {
+                return None;
+            }
+
+            Some(path.into())
+        }
+        _ => None,
+    }
+}
+
+async fn get_git_command_path() -> Option<PathBuf> {
+    match env::consts::OS {
+        "windows" => {
+            let output = shell_run("where git", &None).await;
+
+            let path = output.split("\n").nth(0)?.trim();
+
+            if path.is_empty() {
+                return None;
+            }
+
+            Some(path.into())
+        }
+        "macos" | "linux" => {
+            let output = shell_run("which git", &None).await;
+            let path = output.trim();
+
+            if path.is_empty() {
+                return None;
+            }
+
             Some(path.into())
         }
         _ => None,
@@ -227,6 +264,13 @@ async fn get_project_version() -> Option<String> {
 
 async fn run(args: &Args) {
     println!("Flutter rust checker version {}", env!("CARGO_PKG_VERSION"));
+
+    let (flutter_command, git_command) = join!(get_flutter_command_path(), get_git_command_path());
+
+    if flutter_command == None || git_command == None {
+        println!("Flutter or Git command not found. Please install them and try again.");
+        return;
+    }
 
     match &args.working_dir {
         Some(working_dir) => {
