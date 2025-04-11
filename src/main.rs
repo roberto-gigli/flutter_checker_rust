@@ -1,13 +1,19 @@
 use clap::Parser;
-use futures::executor::LocalPool;
-use futures::join;
-use futures::task::SpawnExt;
+use futures::executor::block_on;
+use futures::{join, FutureExt};
 use serde_yaml::Value;
+use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::Command;
 use std::{env, fmt};
+
+#[derive(Debug)]
+enum ShellError {
+    OSNotSupported,
+    CommandFailed,
+}
 
 trait Printable: fmt::Display {
     fn print(&self) {
@@ -118,37 +124,41 @@ impl fmt::Display for Status {
 impl Printable for Status {}
 
 fn main() {
-    let mut pool = LocalPool::new();
+    let args = Args::parse_from(env::args().collect::<Vec<String>>());
+    let future = run(&args);
 
-    let future = async {
-        let args = Args::parse_from(env::args().collect::<Vec<String>>());
-
-        run(&args).await;
-    };
-
-    pool.spawner().spawn(future).unwrap();
-
-    pool.run();
+    block_on(future)
 }
 
-async fn shell_run(shell_command: &str, cwd: &Option<PathBuf>) -> String {
+trait ShellCommand {
+    fn new_shell<S: AsRef<OsStr>>(program: S) -> Command;
+}
+
+impl ShellCommand for Command {
+    fn new_shell<S: AsRef<OsStr>>(program: S) -> Command {
+        match env::consts::OS {
+            "windows" => {
+                let mut command = Command::new("cmd");
+                command.arg("/C").arg(program);
+                command
+            }
+            "macos" | "linux" => {
+                let mut command = Command::new("sh");
+                command.arg("-c").arg(program);
+                command
+            }
+            _ => Command::new(program),
+        }
+    }
+}
+
+async fn shell_run(shell_command: &str, cwd: &Option<PathBuf>) -> Result<String, ShellError> {
     let mut command = match env::consts::OS {
-        "windows" => Command::new("cmd"),
-        "macos" | "linux" => Command::new("sh"),
-        _ => panic!("Unsupported OS"),
-    };
-
-    match env::consts::OS {
-        "windows" => {
-            command.arg("/C");
+        "windows" | "macos" | "linux" => Command::new_shell(shell_command),
+        _ => {
+            return Err(ShellError::OSNotSupported);
         }
-        "macos" | "linux" => {
-            command.arg("-c");
-        }
-        _ => panic!("Unsupported OS"),
     };
-
-    command.arg(shell_command);
 
     match &cwd {
         Some(path) => {
@@ -159,14 +169,14 @@ async fn shell_run(shell_command: &str, cwd: &Option<PathBuf>) -> String {
 
     let result = command.output();
 
-    match result {
-        Ok(output) => String::from_utf8_lossy(&[output.stdout, output.stderr].concat()).to_string(),
-        Err(e) => e.to_string(),
-    }
+    let output = result.map_err(|_| ShellError::CommandFailed)?;
+
+    return Ok(String::from_utf8_lossy(&[output.stdout, output.stderr].concat()).to_string());
 }
 
 async fn get_flutter_version() -> Option<String> {
-    let output = shell_run("flutter --version", &None).await;
+    println!("Getting flutter version...");
+    let output = shell_run("flutter --version", &None).await.ok()?;
 
     Some(
         output
@@ -182,7 +192,7 @@ async fn get_flutter_version() -> Option<String> {
 async fn get_flutter_command_path() -> Option<PathBuf> {
     match env::consts::OS {
         "windows" => {
-            let output = shell_run("where flutter", &None).await;
+            let output = shell_run("where flutter", &None).await.ok()?;
 
             let path = output.split("\n").nth(0)?.trim();
 
@@ -193,7 +203,7 @@ async fn get_flutter_command_path() -> Option<PathBuf> {
             Some(path.into())
         }
         "macos" | "linux" => {
-            let output = shell_run("which flutter", &None).await;
+            let output = shell_run("which flutter", &None).await.ok()?;
             let path = output.trim();
 
             if path.is_empty() {
@@ -209,7 +219,7 @@ async fn get_flutter_command_path() -> Option<PathBuf> {
 async fn get_git_command_path() -> Option<PathBuf> {
     match env::consts::OS {
         "windows" => {
-            let output = shell_run("where git", &None).await;
+            let output = shell_run("where git", &None).await.ok()?;
 
             let path = output.split("\n").nth(0)?.trim();
 
@@ -220,7 +230,7 @@ async fn get_git_command_path() -> Option<PathBuf> {
             Some(path.into())
         }
         "macos" | "linux" => {
-            let output = shell_run("which git", &None).await;
+            let output = shell_run("which git", &None).await.ok()?;
             let path = output.trim();
 
             if path.is_empty() {
@@ -234,18 +244,21 @@ async fn get_git_command_path() -> Option<PathBuf> {
 }
 
 async fn get_flutter_path() -> Option<PathBuf> {
+    println!("Getting flutter path...");
     let flutter_command_path = get_flutter_command_path().await?;
     let flutter_path = flutter_command_path.parent()?;
     Some(flutter_path.to_owned())
 }
 
 async fn get_flutter_root_path() -> Option<PathBuf> {
+    println!("Getting flutter root path...");
     let flutter_path = get_flutter_path().await?;
     let flutter_root_path = flutter_path.parent()?;
     Some(flutter_root_path.to_owned())
 }
 
 async fn get_project_version() -> Option<String> {
+    println!("Getting project version...");
     let mut pubspec_file = File::open("pubspec.yaml").ok()?;
     let mut buf = String::new();
 
@@ -262,13 +275,72 @@ async fn get_project_version() -> Option<String> {
     )
 }
 
+async fn change_flutter_version(version: &str, status: &Status) {
+    async fn print(result: Result<String, ShellError>) {
+        println!("{:?}", result);
+    }
+    println!("Cleaning flutter working tree...");
+    shell_run("git reset --hard", &status.flutter_path)
+        .then(print)
+        .await;
+
+    println!("Checking out {version}...");
+    shell_run("git fetch", &status.flutter_path)
+        .then(print)
+        .await;
+    shell_run(&format!("git checkout {version}"), &status.flutter_path)
+        .then(print)
+        .await;
+
+    println!("Cleaning flutter working tree...");
+    shell_run("git reset --hard", &status.flutter_path)
+        .then(print)
+        .await;
+
+    if version == "3.29.0" {
+        //https://github.com/flutter/flutter/issues/163308#issuecomment-2661479464
+        println!("Applying workaround for Flutter 3.29.0...");
+        println!("Removing /engine/src/.gn...");
+
+        match env::consts::OS {
+            "windows" => {
+                let _ = shell_run("del .\\engine\\src\\.gn", &status.flutter_root_path).await;
+            }
+            "macos" | "linux" => {
+                let _ = shell_run("rm -rf ./engine/src/.gn", &status.flutter_root_path).await;
+            }
+            _ => {}
+        };
+    }
+
+    println!("Running flutter doctor...");
+    shell_run("flutter doctor", &None).then(print).await;
+
+    shell_run("flutter clean", &None).then(print).await;
+
+    shell_run("flutter pub upgrade", &None).then(print).await;
+
+    if env::consts::OS == "macos" {
+        println!("Running pod install...");
+        shell_run("pod install", &Some("./ios".into()))
+            .then(print)
+            .await;
+    }
+    println!("Completed.");
+}
+
 async fn run(args: &Args) {
     println!("Flutter rust checker version {}", env!("CARGO_PKG_VERSION"));
 
     let (flutter_command, git_command) = join!(get_flutter_command_path(), get_git_command_path());
 
-    if flutter_command == None || git_command == None {
-        println!("Flutter or Git command not found. Please install them and try again.");
+    if flutter_command == None {
+        println!("Flutter not found. Please install it and add it to path");
+        return;
+    }
+
+    if git_command == None {
+        println!("Git not found. Please install it and add it to path");
         return;
     }
 
@@ -285,20 +357,50 @@ async fn run(args: &Args) {
 
     println!("Current directory is: {}", current_dir.display());
 
-    match &args.desired_version {
-        Some(desired_version) => {
-            if !desired_version.trim().is_empty() {
-                println!("DesiredVersion: {desired_version}")
-            }
-        }
-        None => {}
-    }
-
     let mut status = Status::new();
 
+    println!("Loading current status...");
     status.update().await;
 
     status.print();
+
+    match &args.desired_version {
+        Some(desired_version) if !desired_version.is_empty() => {
+            println!("Desired version: {desired_version}");
+
+            if desired_version == status.flutter_version.as_deref().unwrap_or("None") {
+                println!("Flutter version is already {desired_version}");
+                return;
+            }
+
+            println!("Syncing flutter version with desired version...");
+
+            change_flutter_version(&desired_version, &status).await;
+            status.update().await;
+            status.print();
+            return;
+        }
+        _ => {}
+    }
+
+    match &status.project_version {
+        Some(project_version) if !project_version.is_empty() => {
+            if project_version == status.flutter_version.as_deref().unwrap_or("None") {
+                println!("Flutter version is already {project_version}");
+                return;
+            }
+            println!("Flutter version is not synced with project version. Syncing...");
+
+            change_flutter_version(&project_version, &status).await;
+            status.update().await;
+            status.print();
+            return;
+        }
+        _ => {
+            println!("No project version found. Please specify a version with --desiredVersion or set the project version in pubspec.yaml");
+            return;
+        }
+    }
 
     // let test = shell_run("flutter --version", &None).await;
     // println!("Test: {}", test);
