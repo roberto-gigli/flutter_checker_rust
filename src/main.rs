@@ -1,13 +1,18 @@
 use clap::Parser;
 use futures::executor::block_on;
-use futures::join;
+use futures::future::{join3, join_all};
+use futures::stream::FuturesOrdered;
+use futures::{join, FutureExt, StreamExt};
 use serde_yaml::Value;
+use std::any::Any;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs::File;
+use std::future::Future;
 use std::io::Read;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::{env, fmt};
 
@@ -86,17 +91,26 @@ impl Status {
     }
 
     async fn update(&mut self) {
-        let (project_version, flutter_version, flutter_path, flutter_root_path) = join!(
-            get_project_version(),
-            get_flutter_version(),
-            get_flutter_path(),
-            get_flutter_root_path(),
-        );
+        let futures = vec![
+            async {
+                self.project_version = get_project_version().await;
+            }
+            .boxed(),
+            async {
+                self.flutter_version = get_flutter_version().await;
+            }
+            .boxed(),
+            async {
+                self.flutter_path = get_flutter_path().await;
+            }
+            .boxed(),
+            async {
+                self.flutter_root_path = get_flutter_root_path().await;
+            }
+            .boxed(),
+        ];
 
-        self.project_version = project_version;
-        self.flutter_version = flutter_version;
-        self.flutter_path = flutter_path;
-        self.flutter_root_path = flutter_root_path;
+        join_all(futures).await;
     }
 }
 
