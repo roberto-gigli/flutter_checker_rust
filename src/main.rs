@@ -91,7 +91,7 @@ impl Status {
     }
 
     async fn update(&mut self) {
-        let futures = vec![
+        join_all([
             async {
                 self.project_version = get_project_version().await;
             }
@@ -108,9 +108,8 @@ impl Status {
                 self.flutter_root_path = get_flutter_root_path().await;
             }
             .boxed(),
-        ];
-
-        join_all(futures).await;
+        ])
+        .await;
     }
 }
 
