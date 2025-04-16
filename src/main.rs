@@ -7,6 +7,7 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs::File;
+use std::future::Future;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -88,22 +89,10 @@ impl Status {
 
     async fn update(&mut self) {
         join_all([
-            async {
-                self.project_version = get_project_version().await;
-            }
-            .boxed(),
-            async {
-                self.flutter_version = get_flutter_version().await;
-            }
-            .boxed(),
-            async {
-                self.flutter_path = get_flutter_path().await;
-            }
-            .boxed(),
-            async {
-                self.flutter_root_path = get_flutter_root_path().await;
-            }
-            .boxed(),
+            async { self.project_version = get_project_version().await }.boxed(),
+            async { self.flutter_version = get_flutter_version().await }.boxed(),
+            async { self.flutter_path = get_flutter_path().await }.boxed(),
+            async { self.flutter_root_path = get_flutter_root_path().await }.boxed(),
         ])
         .await;
     }
