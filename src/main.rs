@@ -7,7 +7,6 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs::File;
-use std::future::Future;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -358,7 +357,7 @@ async fn change_flutter_version(version: &str, status: &Status) -> Result<(), Bo
 }
 
 async fn run(args: &Args) {
-    println!("Flutter rust checker version {}", env!("CARGO_PKG_VERSION"));
+    println!("Flutter checker rust version {}", env!("CARGO_PKG_VERSION"));
 
     let (flutter_command, git_command) = join!(get_flutter_command_path(), get_git_command_path());
 
