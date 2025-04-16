@@ -1,18 +1,14 @@
 use clap::Parser;
 use futures::executor::block_on;
-use futures::future::{join3, join_all};
-use futures::stream::FuturesOrdered;
-use futures::{join, FutureExt, StreamExt};
+use futures::future::join_all;
+use futures::{join, FutureExt};
 use serde_yaml::Value;
-use std::any::Any;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::fs::File;
-use std::future::Future;
 use std::io::Read;
 use std::path::PathBuf;
-use std::pin::Pin;
 use std::process::{Command, Stdio};
 use std::{env, fmt};
 
